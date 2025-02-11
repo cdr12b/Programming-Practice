@@ -1,7 +1,6 @@
 // This is the entry point of the application for the cloud interview preparation tool.
 
-import { loadTopics } from './utils/helper';
-import { loadQuestions } from './utils/helper';
+import { loadTopics, loadQuestions } from './utils/helper';
 
 const main = async () => {
     const topics = await loadTopics();
