@@ -1,0 +1,29 @@
+#This code defines four services: web, data-store, cache, and monitoring. 
+#The web service depends on the data-store service, which is a PostgreSQL database. 
+#The cache service uses Redis as an in-memory data store.
+
+services:
+  web:
+    build: .
+    ports:
+      - "3000:3000"
+    depends_on:
+      - data-store
+
+  data-store:
+    image: postgres
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+    volumes:
+      - ./data:/var/lib/postgresql/data
+
+  cache:
+    image: redis:alpine
+    ports:
+      - "6379:6379"
+
+  monitoring:
+    build: .
+    depends_on:
+      - web

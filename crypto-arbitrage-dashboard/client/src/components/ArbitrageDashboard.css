@@ -1,0 +1,7 @@
+.arbitrage-dashboard {
+  display: flex;
+  flex-direction: column;
+  align-items: center; /* Center horizontally */
+  justify-content: center; /* Center vertically if needed */
+  margin: 20px; /* Add some margin */
+}
