@@ -55,6 +55,3 @@ This will launch the application and allow you to navigate through the topics an
 
 Contributions are welcome! If you have suggestions for improvements or additional topics/questions, please feel free to submit a pull request.
 
-### License
-
-This project is licensed under the MIT License. See the LICENSE file for more details.
