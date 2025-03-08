@@ -1,0 +1,213 @@
+import alpaca_trade_api as tradeapi
+import os
+import time
+import datetime
+import threading
+from queue import Queue, Empty
+import pandas as pd
+
+# --- API Key Setup (Environment Variables) ---
+ALPACA_API_KEY = os.environ.get('ALPACA_API_KEY')
+ALPACA_SECRET_KEY = os.environ.get('ALPACA_SECRET_KEY')
+ALPACA_ENDPOINT = os.environ.get('ALPACA_ENDPOINT', "https://paper-api.alpaca.markets")
+
+if not ALPACA_API_KEY or not ALPACA_SECRET_KEY:
+    print("Error: Alpaca API keys not found.")
+    exit()
+
+# --- Initialize Alpaca API ---
+try:
+    api = tradeapi.REST(ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_ENDPOINT)
+    streaming_api = tradeapi.StreamConn(ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_ENDPOINT)  # For streaming API
+except Exception as e:
+    print(f"Error initializing Alpaca API: {e}")
+    exit()
+
+# --- Configuration ---
+SYMBOL = "AAPL"
+MOVING_AVERAGE_PERIOD = 20  # Days
+TRADE_QUANTITY = 1
+STOP_LOSS_PERCENTAGE = 0.02  # 2% stop loss
+
+# --- Functions ---
+
+def calculate_moving_average(data, period):
+    """Calculates the moving average of a given data series."""
+    if len(data) < period:
+        return None
+    return sum(data[-period:]) / period
+
+def trading_logic(data_queue):
+    """Implements the trading logic based on a moving average."""
+    historical_prices = []  # To keep track of prices
+    current_order_id = None # To keep track of the current order
+    position = 0           # Current position (+1 for long, -1 for short, 0 for none)
+
+    while True:
+        try:
+            trade = data_queue.get(timeout=60)  # Timeout after 60 seconds of inactivity
+            price = trade.price
+            historical_prices.append(price)
+
+            moving_average = calculate_moving_average(historical_prices, MOVING_AVERAGE_PERIOD)
+
+            if moving_average is not None:
+                print(f"Current Price: {price}, Moving Average ({MOVING_AVERAGE_PERIOD} days): {moving_average}")
+
+                # Get current stop_loss
+                if position > 0 and current_order_id is not None:
+                    try:
+                        order = api.get_order(current_order_id)
+                        stop_price = order.stop_price
+                    except Exception as e:
+                         print(f"Couldn't retrieve order: {e}")
+                         stop_price = None
+                elif position <0 and current_order_id is not None:
+                    try:
+                        order = api.get_order(current_order_id)
+                        stop_price = order.stop_price
+                    except Exception as e:
+                         print(f"Couldn't retrieve order: {e}")
+                         stop_price = None
+
+                # Buy if price is above MA and no existing long position
+                if price > moving_average and position == 0:
+                    quantity = TRADE_QUANTITY
+                    order = place_order(SYMBOL, quantity, "buy", type="market", time_in_force="gtc")
+                    if order:
+                      position = quantity  # Assume immediate fill for paper trading
+                      stop_price = price * (1 - STOP_LOSS_PERCENTAGE)
+                      stop_loss_order = place_order(SYMBOL, quantity, "sell", type="stop_loss", time_in_force="gtc", stop_price=stop_price)
+                      if stop_loss_order:
+                          current_order_id = stop_loss_order.id
+                          print(f"Bought {TRADE_QUANTITY} shares of {SYMBOL} at {price}.  Stop loss set at {stop_price}")
+                      else:
+                          print(f"Error placing stop loss order.")
+                          position = 0 #Something wrong so set to 0
+
+                # Sell if price is below MA and existing long position
+                elif price < moving_average and position > 0:
+                    place_order(SYMBOL, position, "sell", type="market", time_in_force="gtc")  # Sell existing shares
+                    cancel_order(current_order_id)
+                    position = 0  # Reset position
+                    print(f"Sold {position} shares of {SYMBOL} at {price}")
+                #Shorting
+                elif price < moving_average and position ==0:
+                    quantity = TRADE_QUANTITY
+                    order = place_order(SYMBOL, quantity, "sell", type="market", time_in_force="gtc")
+                    if order:
+                      position = -quantity  # Assume immediate fill for paper trading
+                      stop_price = price * (1 + STOP_LOSS_PERCENTAGE)
+                      stop_loss_order = place_order(SYMBOL, quantity, "buy", type="stop_loss", time_in_force="gtc", stop_price=stop_price)
+                      if stop_loss_order:
+                          current_order_id = stop_loss_order.id
+                          print(f"Short {TRADE_QUANTITY} shares of {SYMBOL} at {price}.  Stop loss set at {stop_price}")
+                      else:
+                          print(f"Error placing stop loss order.")
+                          position = 0 #Something wrong so set to 0
+                #Cover
+                elif price > moving_average and position < 0:
+                    place_order(SYMBOL, abs(position), "buy", type="market", time_in_force="gtc")  # Sell existing shares
+                    cancel_order(current_order_id)
+                    position = 0  # Reset position
+                    print(f"Covered short {position} shares of {SYMBOL} at {price}")
+        except Empty:
+            print("No new data received for 60 seconds. Exiting trading logic.")
+            break
+        except Exception as e:
+            print(f"Error in trading logic: {e}")
+            time.sleep(10)  # Wait before retrying
+
+def place_order(symbol, quantity, side, type="market", time_in_force="gtc", stop_price=None):
+    """Places an order using the Alpaca API."""
+    try:
+        if stop_price is not None and type == "stop_loss":
+            order = api.submit_order(
+                symbol=symbol,
+                qty=quantity,
+                side=side,
+                type=type,
+                time_in_force=time_in_force,
+                stop_price=stop_price
+            )
+        else:
+            order = api.submit_order(
+                symbol=symbol,
+                qty=quantity,
+                side=side,
+                type=type,
+                time_in_force=time_in_force,
+            )
+
+        print(f"{type} order placed: {side} {quantity} shares of {symbol}")
+        return order
+    except Exception as e:
+        print(f"Error placing order: {e}")
+        return None
+
+def cancel_order(order_id):
+    """Cancel order when moving average dictates"""
+    try:
+        api.cancel_order(order_id)
+        print(f"Order {order_id} cancelled")
+    except Exception as e:
+        print(f"Error cancelling order: {e}")
+
+def get_position(symbol):
+    """Gets the current position for a given symbol."""
+    try:
+        position = api.get_position(symbol)
+        return int(position.qty)  # Return as integer
+    except Exception as e:
+        if "not found" in str(e):  # Handle no position case
+            return 0
+        else:
+            print(f"Error getting position: {e}")
+            return 0  # Assume no position in case of error
+
+# --- Streaming Data Handler ---
+
+def handle_trade(trade):
+    """Handles incoming trade data from the Alpaca streaming API."""
+    DATA_QUEUE.put(trade)
+
+def stream_data():
+    """Streams data from Alpaca and puts it into a queue."""
+    try:
+        streaming_api.subscribe_trades(handle_trade, SYMBOL)
+        streaming_api.run()
+    except Exception as e:
+        print(f"Error during data streaming: {e}")
+
+# --- Main ---
+
+if __name__ == "__main__":
+
+    # Verify that the market is open
+    clock = api.get_clock()
+    if not clock.is_open:
+        print("Market is closed. Exiting.")
+        exit()
+
+    # Clear existing orders
+    try:
+        orders = api.list_orders(status="open")
+        for order in orders:
+            api.cancel_order(order.id)
+        print("Existing open orders cancelled.")
+    except Exception as e:
+        print(f"Error cancelling existing orders: {e}")
+
+    # Start the data streaming thread
+    data_thread = threading.Thread(target=stream_data)
+    data_thread.daemon = True  # Allow main thread to exit even if this is running
+    data_thread.start()
+
+    # Start the trading logic thread
+    trading_thread = threading.Thread(target=trading_logic, args=(DATA_QUEUE,))
+    trading_thread.daemon = True
+    trading_thread.start()
+
+    # Keep the main thread alive (optional)
+    while True:
+        time.sleep(600)  # Check every 10 minutes
